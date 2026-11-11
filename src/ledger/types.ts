@@ -12,6 +12,8 @@ export interface Account {
   allowNegative: boolean;
   debitsPosted: bigint;
   creditsPosted: bigint;
+  /** Funds reserved by pending holds. */
+  held: bigint;
   createdAt: Date;
 }
 
@@ -45,4 +47,11 @@ export function balanceOf(
   return normalSide(account.type) === 'debit'
     ? account.debitsPosted - account.creditsPosted
     : account.creditsPosted - account.debitsPosted;
+}
+
+/** What an account can still spend: its balance less the funds on hold. */
+export function availableBalanceOf(
+  account: Pick<Account, 'type' | 'debitsPosted' | 'creditsPosted' | 'held'>,
+): bigint {
+  return balanceOf(account) - account.held;
 }

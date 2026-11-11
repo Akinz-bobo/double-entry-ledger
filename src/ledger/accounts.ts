@@ -14,6 +14,7 @@ interface AccountRow {
   allow_negative: boolean;
   debits_posted: bigint;
   credits_posted: bigint;
+  held: bigint;
   created_at: Date;
 }
 
@@ -29,6 +30,7 @@ export function toAccount(row: AccountRow): Account {
     allowNegative: row.allow_negative,
     debitsPosted: row.debits_posted,
     creditsPosted: row.credits_posted,
+    held: row.held,
     createdAt: row.created_at,
   };
 }
@@ -44,9 +46,16 @@ export interface CreateAccountInput {
 export async function createAccount(db: Queryable, input: CreateAccountInput): Promise<Account> {
   try {
     const result = await db.query<AccountRow>(
-      `INSERT INTO accounts (code, name, type, currency, allow_negative)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
+      // One statement, so the account and its event are written atomically.
+      `WITH created AS (
+         INSERT INTO accounts (code, name, type, currency, allow_negative)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *
+       ), event AS (
+         INSERT INTO ledger_events (type, payload)
+         SELECT 'account.created', jsonb_build_object('id', id, 'code', code) FROM created
+       )
+       SELECT * FROM created`,
       [input.code, input.name, input.type, input.currency, input.allowNegative],
     );
     return toAccount(result.rows[0] as AccountRow);
@@ -128,4 +137,31 @@ export async function listAccountEntries(
     })),
     nextCursor: result.rows.length > limit && last ? last.id : null,
   };
+}
+
+export interface ListAccountsInput {
+  limit: number;
+  /** Return accounts whose code sorts after this one. */
+  after?: string | undefined;
+  type?: AccountType | undefined;
+  currency?: string | undefined;
+}
+
+/** One page of accounts in code order, using keyset pagination. */
+export async function listAccounts(
+  db: Queryable,
+  { limit, after, type, currency }: ListAccountsInput,
+): Promise<{ accounts: Account[]; nextCursor: string | null }> {
+  const result = await db.query<AccountRow>(
+    `SELECT * FROM accounts
+     WHERE ($1::text IS NULL OR code > $1)
+       AND ($2::account_type IS NULL OR type = $2)
+       AND ($3::text IS NULL OR currency = $3)
+     ORDER BY code
+     LIMIT $4`,
+    [after ?? null, type ?? null, currency ?? null, limit + 1],
+  );
+  const page = result.rows.slice(0, limit).map(toAccount);
+  const last = page.at(-1);
+  return { accounts: page, nextCursor: result.rows.length > limit && last ? last.code : null };
 }

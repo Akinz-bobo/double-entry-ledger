@@ -13,6 +13,7 @@ function account(code: string, type: AccountType, overrides: Partial<Account> = 
     allowNegative: false,
     debitsPosted: 0n,
     creditsPosted: 0n,
+    held: 0n,
     createdAt: new Date(0),
     ...overrides,
   };

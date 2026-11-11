@@ -2,6 +2,7 @@ import type pg from 'pg';
 import { pgErrorCode, type Client, type Pool } from '../db/pool.js';
 import { errors } from '../domain/errors.js';
 import { lockAccounts } from './accounts.js';
+import { recordEvent } from './events.js';
 import { planPosting, type EntryInput } from './posting.js';
 import type { Direction, Entry, Transaction } from './types.js';
 
@@ -99,6 +100,12 @@ export async function postTransaction(
       deltas.map((delta) => delta.credits.toString()),
     ],
   );
+
+  await recordEvent(client, reverses ? 'transaction.reversed' : 'transaction.posted', {
+    id: row.id,
+    reference: row.reference,
+    ...(reverses ? { reverses } : {}),
+  });
 
   const entries: Entry[] = lines.map((line, index) => ({
     id: (insertedEntries.rows[index] as { id: bigint }).id,

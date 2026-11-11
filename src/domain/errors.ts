@@ -54,5 +54,18 @@ export const errors = {
     ),
   idempotencyKeyRequired: () =>
     new DomainError('idempotency_key_required', 'The Idempotency-Key header is required', 400),
+  holdNotFound: (id: string) =>
+    new DomainError('hold_not_found', `Unknown hold: ${id}`, 404, { id }),
+  holdNotPending: (id: string, status: string) =>
+    new DomainError('hold_not_pending', `Hold ${id} is already ${status}`, 409, { id, status }),
+  holdExpired: (id: string) =>
+    new DomainError('hold_expired', `Hold ${id} has expired`, 409, { id }),
+  captureExceedsHold: (id: string) =>
+    new DomainError('capture_exceeds_hold', `Cannot capture more than hold ${id} reserved`, 422, {
+      id,
+    }),
+  invalidCursor: () => new DomainError('invalid_cursor', 'The cursor is not valid', 400),
   unauthorized: () => new DomainError('unauthorized', 'Missing or invalid API key', 401),
+  forbidden: (scope: string) =>
+    new DomainError('forbidden', `This API key does not have the ${scope} scope`, 403, { scope }),
 };

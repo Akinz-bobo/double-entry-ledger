@@ -1,5 +1,5 @@
 import { errors } from '../domain/errors.js';
-import { balanceOf, type Account, type Direction } from './types.js';
+import { availableBalanceOf, type Account, type Direction } from './types.js';
 
 export interface EntryInput {
   accountCode: string;
@@ -21,7 +21,8 @@ export interface AccountDelta {
  * Rules enforced:
  *  - at least two entries
  *  - debits equal credits, separately for each currency
- *  - no account ends below zero unless it allows it
+ *  - no account's available balance (balance less holds) ends below zero,
+ *    unless the account allows it
  */
 export function planPosting(entries: EntryInput[], accounts: Map<string, Account>): AccountDelta[] {
   if (entries.length < 2) throw errors.tooFewEntries();
@@ -54,10 +55,11 @@ export function planPosting(entries: EntryInput[], accounts: Map<string, Account
 
   for (const { account, debits, credits } of deltas.values()) {
     if (account.allowNegative) continue;
-    const after = balanceOf({
+    const after = availableBalanceOf({
       type: account.type,
       debitsPosted: account.debitsPosted + debits,
       creditsPosted: account.creditsPosted + credits,
+      held: account.held,
     });
     if (after < 0n) throw errors.insufficientFunds(account.code);
   }
