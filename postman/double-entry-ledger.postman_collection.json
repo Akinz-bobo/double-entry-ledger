@@ -1,0 +1,1354 @@
+{
+  "info": {
+    "_postman_id": "32ab4972-368c-5872-a57a-9b69e0770ab5",
+    "name": "Double-Entry Ledger API",
+    "description": "A guided tour of the ledger API that also runs as an end-to-end test.\n\nRun the folders in order, or run the whole collection. Each run uses fresh account codes and references, so it can be repeated against the same database.\n\n**Setup:** start the service with `make up`. The default variables point at `http://localhost:3000` with the local API key `dev-key`.\n\n**Amounts** are whole numbers of minor units, as strings: `\"5000\"` is 50.00.\n\n**Idempotency:** a pre-request script sets a fresh `Idempotency-Key` for every request. The retry examples reuse a saved key on purpose.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-API-Key"
+      },
+      {
+        "key": "value",
+        "value": "{{apiKey}}"
+      },
+      {
+        "key": "in",
+        "value": "header"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// One id per run keeps account codes and references unique, so the",
+          "// collection can be run again and again against the same database.",
+          "if (!pm.collectionVariables.get('runId')) {",
+          "  pm.collectionVariables.set('runId', Date.now().toString(36) + Math.random().toString(36).slice(2, 6));",
+          "}",
+          "// A fresh idempotency key for every request.",
+          "pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('returns a request id', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string'));"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "apiKey",
+      "value": "dev-key"
+    },
+    {
+      "key": "runId",
+      "value": ""
+    },
+    {
+      "key": "idempotencyKey",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Accounts",
+      "description": "Create the accounts the rest of the tour uses.",
+      "item": [
+        {
+          "name": "Create the bank's cash account",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"bank:cash-{{runId}}\",\n  \"name\": \"Cash at bank\",\n  \"type\": \"asset\",\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "An asset account: the money the business actually holds at its bank."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('starts at zero', () => pm.expect(pm.response.json().balance).to.eql('0'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create a customer wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"wallet:alice-{{runId}}\",\n  \"name\": \"Alice\",\n  \"type\": \"liability\",\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A liability account: money the business owes to a customer. It cannot go below zero."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 201', () => pm.response.to.have.status(201));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create a merchant account",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"merchant:shop-{{runId}}\",\n  \"name\": \"Shop\",\n  \"type\": \"liability\",\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 201', () => pm.response.to.have.status(201));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject a duplicate account code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"wallet:alice-{{runId}}\",\n  \"name\": \"Alice again\",\n  \"type\": \"liability\",\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is account_exists', () => pm.expect(pm.response.json().error.code).to.eql('account_exists'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject an invalid account",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"Not A Valid Code\",\n  \"name\": \"\",\n  \"type\": \"savings\",\n  \"currency\": \"usd\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('lists the failing fields', () => pm.expect(pm.response.json().error.details.issues.length).to.be.above(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get an account",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts/wallet:alice-{{runId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts", "wallet:alice-{{runId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has balances', () => pm.expect(pm.response.json()).to.include.keys('balance', 'availableBalance', 'held'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List accounts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts?limit=50&type=liability",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "type",
+                  "value": "liability"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns a page', () => pm.expect(pm.response.json().accounts).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Transactions",
+      "description": "Post, retry safely, and reverse.",
+      "item": [
+        {
+          "name": "Deposit 50.00 into the wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"deposit-{{runId}}\",\n  \"description\": \"Card deposit\",\n  \"entries\": [\n    {\n      \"accountCode\": \"bank:cash-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"5000\"\n    },\n    {\n      \"accountCode\": \"wallet:alice-{{runId}}\",\n      \"direction\": \"credit\",\n      \"amount\": \"5000\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Debits the bank's cash and credits the customer's wallet. Both sides are recorded or neither is."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('depositId', body.id);",
+                  "pm.collectionVariables.set('depositKey', pm.request.headers.get('Idempotency-Key'));",
+                  "pm.test('has two entries', () => pm.expect(body.entries).to.have.lengthOf(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retry the deposit with the same key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{depositKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"deposit-{{runId}}\",\n  \"description\": \"Card deposit\",\n  \"entries\": [\n    {\n      \"accountCode\": \"bank:cash-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"5000\"\n    },\n    {\n      \"accountCode\": \"wallet:alice-{{runId}}\",\n      \"direction\": \"credit\",\n      \"amount\": \"5000\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What a client does after a timeout. The ledger returns the first response and posts nothing new."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('is marked as a replay', () => pm.expect(pm.response.headers.get('Idempotent-Replayed')).to.eql('true'));",
+                  "pm.test('returns the original transaction', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('depositId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reuse the key for a different request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{depositKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"something-else-{{runId}}\",\n  \"description\": \"Card deposit\",\n  \"entries\": [\n    {\n      \"accountCode\": \"bank:cash-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"5000\"\n    },\n    {\n      \"accountCode\": \"wallet:alice-{{runId}}\",\n      \"direction\": \"credit\",\n      \"amount\": \"5000\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is idempotency_key_reused', () => pm.expect(pm.response.json().error.code).to.eql('idempotency_key_reused'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Wallet balance is 50.00, not 100.00",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts/wallet:alice-{{runId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts", "wallet:alice-{{runId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the retry did not double the deposit', () => pm.expect(pm.response.json().balance).to.eql('5000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pay the merchant 20.00",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"payment-{{runId}}\",\n  \"entries\": [\n    {\n      \"accountCode\": \"wallet:alice-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"2000\"\n    },\n    {\n      \"accountCode\": \"merchant:shop-{{runId}}\",\n      \"direction\": \"credit\",\n      \"amount\": \"2000\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('paymentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject an unbalanced transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"unbalanced-{{runId}}\",\n  \"entries\": [\n    {\n      \"accountCode\": \"wallet:alice-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"100\"\n    },\n    {\n      \"accountCode\": \"merchant:shop-{{runId}}\",\n      \"direction\": \"credit\",\n      \"amount\": \"90\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is unbalanced_transaction', () => pm.expect(pm.response.json().error.code).to.eql('unbalanced_transaction'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject an overdraft",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"overdraft-{{runId}}\",\n  \"entries\": [\n    {\n      \"accountCode\": \"wallet:alice-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"999999\"\n    },\n    {\n      \"accountCode\": \"merchant:shop-{{runId}}\",\n      \"direction\": \"credit\",\n      \"amount\": \"999999\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is insufficient_funds', () => pm.expect(pm.response.json().error.code).to.eql('insufficient_funds'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Require an Idempotency-Key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"deposit-{{runId}}\",\n  \"description\": \"Card deposit\",\n  \"entries\": [\n    {\n      \"accountCode\": \"bank:cash-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"5000\"\n    },\n    {\n      \"accountCode\": \"wallet:alice-{{runId}}\",\n      \"direction\": \"credit\",\n      \"amount\": \"5000\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is idempotency_key_required', () => pm.expect(pm.response.json().error.code).to.eql('idempotency_key_required'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get a transaction",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/{{paymentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions", "{{paymentId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('is the payment', () => pm.expect(pm.response.json().reference).to.match(/^payment-/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refund the payment (reverse it)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/{{paymentId}}/reversals",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions", "{{paymentId}}", "reversals"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Customer refund\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Posts the mirror image of the payment. The original transaction is never edited."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('points at the original', () => pm.expect(pm.response.json().reverses).to.eql(pm.collectionVariables.get('paymentId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject a second reversal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/{{paymentId}}/reversals",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions", "{{paymentId}}", "reversals"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is already_reversed', () => pm.expect(pm.response.json().error.code).to.eql('already_reversed'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Holds",
+      "description": "Authorize now, capture or void later.",
+      "item": [
+        {
+          "name": "Authorize 15.00 on the wallet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/holds",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "holds"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountCode\": \"wallet:alice-{{runId}}\",\n  \"amount\": \"1500\",\n  \"reference\": \"auth-{{runId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Reserves funds without moving them, like a card authorization."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('holdId', pm.response.json().id);",
+                  "pm.test('is pending', () => pm.expect(pm.response.json().status).to.eql('pending'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Held funds leave the available balance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts/wallet:alice-{{runId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts", "wallet:alice-{{runId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const account = pm.response.json();",
+                  "pm.test('balance is unchanged', () => pm.expect(account.balance).to.eql('5000'));",
+                  "pm.test('available balance drops by the hold', () => pm.expect(account.availableBalance).to.eql('3500'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture 12.00 of the hold",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/holds/{{holdId}}/capture",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "holds", "{{holdId}}", "capture"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"destinationAccountCode\": \"merchant:shop-{{runId}}\",\n  \"amount\": \"1200\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Moves 12.00 to the merchant and releases the remaining 3.00 back to the wallet."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('hold is captured', () => pm.expect(body.hold.status).to.eql('captured'));",
+                  "pm.test('a transaction was posted', () => pm.expect(body.transaction.entries).to.have.lengthOf(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject a second capture",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/holds/{{holdId}}/capture",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "holds", "{{holdId}}", "capture"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"destinationAccountCode\": \"merchant:shop-{{runId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is hold_not_pending', () => pm.expect(pm.response.json().error.code).to.eql('hold_not_pending'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Authorize another 5.00",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/holds",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "holds"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountCode\": \"wallet:alice-{{runId}}\",\n  \"amount\": \"500\",\n  \"reference\": \"auth-2-{{runId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('secondHoldId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Void the second hold",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/holds/{{secondHoldId}}/void",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "holds", "{{secondHoldId}}", "void"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('is voided', () => pm.expect(pm.response.json().status).to.eql('voided'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get a hold",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/holds/{{holdId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "holds", "{{holdId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 200', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Wallet ends at 38.00 with nothing held",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts/wallet:alice-{{runId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts", "wallet:alice-{{runId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const account = pm.response.json();",
+                  "pm.test('balance is 5000 - 1200', () => pm.expect(account.balance).to.eql('3800'));",
+                  "pm.test('nothing is held', () => pm.expect(account.held).to.eql('0'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Reports and events",
+      "description": "History, reconciliation, integrity check and the event feed.",
+      "item": [
+        {
+          "name": "List the wallet's entries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts/wallet:alice-{{runId}}/entries?limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts", "wallet:alice-{{runId}}", "entries"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('newest first', () => pm.expect(pm.response.json().entries[0].reference).to.match(/^capture:/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reconcile cash against a bank statement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/reconciliations",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "reconciliations"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountCode\": \"bank:cash-{{runId}}\",\n  \"from\": \"{{periodStart}}\",\n  \"to\": \"{{periodEnd}}\",\n  \"statement\": [\n    {\n      \"reference\": \"deposit-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"4900\"\n    },\n    {\n      \"reference\": \"unknown-{{runId}}\",\n      \"direction\": \"debit\",\n      \"amount\": \"700\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The statement disagrees with the ledger on purpose: one amount is wrong and one line was never posted."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('periodStart', new Date(Date.now() - 3600000).toISOString());",
+                  "pm.collectionVariables.set('periodEnd', new Date(Date.now() + 3600000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const report = pm.response.json();",
+                  "pm.test('is not balanced', () => pm.expect(report.balanced).to.be.false);",
+                  "pm.test('finds the amount mismatch', () => pm.expect(report.amountMismatches).to.have.lengthOf(1));",
+                  "pm.test('finds the payment missing from the ledger', () => pm.expect(report.missingInLedger).to.have.lengthOf(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Trial balance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/reports/trial-balance",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "reports", "trial-balance"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the books balance', () => pm.expect(pm.response.json().balanced).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read the event feed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/events?limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "events"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const page = pm.response.json();",
+                  "pm.collectionVariables.set('eventCursor', page.nextCursor);",
+                  "pm.test('has events', () => pm.expect(page.events.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Poll the feed from the cursor",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/events?cursor={{eventCursor}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "events"],
+              "query": [
+                {
+                  "key": "cursor",
+                  "value": "{{eventCursor}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns a cursor to keep polling from', () => pm.expect(pm.response.json().nextCursor).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Operations and security",
+      "description": "Health, metrics and authentication.",
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": ["{{baseUrl}}"],
+              "path": ["healthz"]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 200', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/readyz",
+              "host": ["{{baseUrl}}"],
+              "path": ["readyz"]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 200', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["metrics"]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('exposes ledger metrics', () => pm.expect(pm.response.text()).to.include('ledger_transactions_posted_total'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject a request with no API key",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts"]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 401', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject a wrong API key",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/accounts",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "accounts"]
+            },
+            "auth": {
+              "type": "apikey",
+              "apikey": [
+                {
+                  "key": "key",
+                  "value": "X-API-Key"
+                },
+                {
+                  "key": "value",
+                  "value": "not-the-key"
+                },
+                {
+                  "key": "in",
+                  "value": "header"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 401', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
