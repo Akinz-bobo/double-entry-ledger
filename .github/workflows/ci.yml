@@ -75,3 +75,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build --tag double-entry-ledger:ci .
+
+  api:
+    name: API contract (Postman collection)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the stack
+        run: docker compose up --build --detach
+      - name: Wait for the API
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail http://localhost:3000/readyz > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Run the collection
+        run: npx --yes newman@6 run postman/double-entry-ledger.postman_collection.json
+      - name: Show service logs
+        if: failure()
+        run: docker compose logs

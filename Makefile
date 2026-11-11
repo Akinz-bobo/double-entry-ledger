@@ -1,4 +1,4 @@
-.PHONY: up down db test check
+.PHONY: up down db test api-test check
 
 up: ## Start Postgres, run migrations and start the API
 	docker compose up --build
@@ -14,6 +14,9 @@ db: ## Start only Postgres, for running tests locally
 
 test: ## Run the whole test suite (needs `make db`)
 	pnpm test
+
+api-test: ## Run the Postman collection against the running stack (needs `make up`)
+	npx --yes newman@6 run postman/double-entry-ledger.postman_collection.json
 
 check: ## Everything CI runs
 	pnpm format:check && pnpm lint && pnpm typecheck && pnpm test
