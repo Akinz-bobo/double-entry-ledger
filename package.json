@@ -18,8 +18,8 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run test/unit",
-    "test:integration": "vitest run test/integration",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
     "migrate:prod": "node dist/db/migrate.js"
   },
   "dependencies": {
