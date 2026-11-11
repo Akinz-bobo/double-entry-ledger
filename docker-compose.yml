@@ -1,0 +1,41 @@
+# Local stack: Postgres, a one-off migration run, then the API.
+# The API key for this stack is "dev-key". Never use it anywhere else.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+      POSTGRES_DB: ledger
+    ports:
+      - '5544:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ledger -d ledger']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    command: ['node', 'dist/db/migrate.js']
+    environment:
+      DATABASE_URL: postgres://ledger:ledger@postgres:5432/ledger
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgres://ledger:ledger@postgres:5432/ledger
+      API_KEY_HASHES: 7e9f8fd111802be56c379d597842e29b2cebd35ff2133d431a49fa556a18704e
+    ports:
+      - '3000:3000'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
