@@ -25,6 +25,7 @@ WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
+COPY openapi ./openapi
 COPY package.json ./
 
 # Run as the unprivileged user that ships with the image.

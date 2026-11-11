@@ -9,6 +9,7 @@ import { DomainError } from '../domain/errors.js';
 import { createMetrics, type Metrics } from '../observability/metrics.js';
 import { requireApiKey } from './auth.js';
 import type { RouteContext } from './context.js';
+import { registerApiDocs } from './openapi.js';
 import { accountRoutes } from './routes/accounts.js';
 import { holdRoutes } from './routes/holds.js';
 import { reportRoutes } from './routes/reports.js';
@@ -18,6 +19,8 @@ export interface AppDependencies {
   config: Pick<Config, 'API_KEY_HASHES' | 'RATE_LIMIT_MAX' | 'LOG_LEVEL'>;
   pool: Pool;
   metrics?: Metrics;
+  /** Runs on the new instance before any route is added. Used by tests to observe routes. */
+  configure?: ((app: FastifyInstance) => void) | undefined;
 }
 
 const REQUEST_ID = /^[\w.-]{1,128}$/;
@@ -26,6 +29,7 @@ export async function buildApp({
   config,
   pool,
   metrics = createMetrics(),
+  configure,
 }: AppDependencies): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -41,6 +45,8 @@ export async function buildApp({
       return typeof inbound === 'string' && REQUEST_ID.test(inbound) ? inbound : randomUUID();
     },
   });
+
+  configure?.(app);
 
   await app.register(helmet);
   await app.register(rateLimit, { max: config.RATE_LIMIT_MAX, timeWindow: '1 minute' });
@@ -112,6 +118,8 @@ export async function buildApp({
       .header('content-type', metrics.registry.contentType)
       .send(await metrics.registry.metrics());
   });
+
+  await registerApiDocs(app);
 
   // ---- ledger API
   const context: RouteContext = { pool, metrics };
