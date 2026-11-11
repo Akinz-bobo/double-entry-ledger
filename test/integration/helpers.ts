@@ -23,8 +23,12 @@ export async function resetDatabase(pool: Pool): Promise<void> {
   );
 }
 
-export async function createTestApp(pool: Pool): Promise<FastifyInstance> {
+export async function createTestApp(
+  pool: Pool,
+  configure?: (app: FastifyInstance) => void,
+): Promise<FastifyInstance> {
   return buildApp({
+    configure,
     pool,
     config: {
       API_KEY_HASHES: [sha256(API_KEY), `${sha256(READ_ONLY_API_KEY)}:read`],
