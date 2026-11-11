@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-const sha256Hex = /^[a-f0-9]{64}$/;
+// A SHA-256 hex digest, optionally followed by a scope: `<digest>:read`.
+const apiKeyEntry = /^[a-f0-9]{64}(:(read|write))?$/;
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -11,7 +12,16 @@ const schema = z.object({
   API_KEY_HASHES: z
     .string()
     .transform((value) => value.split(',').map((hash) => hash.trim().toLowerCase()))
-    .pipe(z.array(z.string().regex(sha256Hex, 'must be a SHA-256 hex digest')).min(1)),
+    .pipe(
+      z
+        .array(
+          z
+            .string()
+            .regex(apiKeyEntry, 'must be a SHA-256 hex digest, optionally followed by :read'),
+        )
+        .min(1),
+    ),
+  HOLD_EXPIRY_SWEEP_SECONDS: z.coerce.number().int().positive().default(30),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });
