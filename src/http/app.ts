@@ -1,23 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import type { Config } from '../config.js';
 import type { Pool } from '../db/pool.js';
-import { DomainError, errors } from '../domain/errors.js';
-import { createAccount, getAccount, listAccountEntries } from '../ledger/accounts.js';
-import { fingerprint, runIdempotent } from '../ledger/idempotency.js';
-import { getTransaction, postTransaction, reverseTransaction } from '../ledger/transactions.js';
+import { DomainError } from '../domain/errors.js';
 import { createMetrics, type Metrics } from '../observability/metrics.js';
-import { reconcileAccount } from '../reconciliation/reconcile.js';
 import { requireApiKey } from './auth.js';
-import * as schemas from './schemas.js';
-import {
-  serializeAccount,
-  serializeAccountEntry,
-  serializeReport,
-  serializeTransaction,
-} from './serialize.js';
+import type { RouteContext } from './context.js';
+import { accountRoutes } from './routes/accounts.js';
+import { holdRoutes } from './routes/holds.js';
+import { reportRoutes } from './routes/reports.js';
+import { transactionRoutes } from './routes/transactions.js';
 
 export interface AppDependencies {
   config: Pick<Config, 'API_KEY_HASHES' | 'RATE_LIMIT_MAX' | 'LOG_LEVEL'>;
@@ -25,11 +20,7 @@ export interface AppDependencies {
   metrics?: Metrics;
 }
 
-function readIdempotencyKey(request: FastifyRequest): string {
-  const parsed = schemas.idempotencyKey.safeParse(request.headers['idempotency-key']);
-  if (!parsed.success) throw errors.idempotencyKeyRequired();
-  return parsed.data;
-}
+const REQUEST_ID = /^[\w.-]{1,128}$/;
 
 export async function buildApp({
   config,
@@ -43,10 +34,21 @@ export async function buildApp({
       redact: ['req.headers["x-api-key"]', 'req.headers.authorization'],
     },
     bodyLimit: 1024 * 1024,
+    // Reuse the caller's request id when it is well formed, so one id follows
+    // a request across services. Anything else gets a fresh one.
+    genReqId: (request) => {
+      const inbound = request.headers['x-request-id'];
+      return typeof inbound === 'string' && REQUEST_ID.test(inbound) ? inbound : randomUUID();
+    },
   });
 
   await app.register(helmet);
   await app.register(rateLimit, { max: config.RATE_LIMIT_MAX, timeWindow: '1 minute' });
+
+  app.addHook('onRequest', (request, reply, done) => {
+    void reply.header('x-request-id', request.id);
+    done();
+  });
 
   app.addHook('onResponse', (request, reply, done) => {
     metrics.httpRequestDuration.observe(
@@ -112,85 +114,14 @@ export async function buildApp({
   });
 
   // ---- ledger API
+  const context: RouteContext = { pool, metrics };
   await app.register(
     (v1, _options, done) => {
       v1.addHook('onRequest', requireApiKey(config.API_KEY_HASHES));
-
-      const sendIdempotent = (
-        reply: FastifyReply,
-        result: { status: number; body: unknown; replayed: boolean },
-      ) => {
-        if (result.replayed) {
-          metrics.idempotentReplays.inc();
-          void reply.header('idempotent-replayed', 'true');
-        }
-        return reply.status(result.status).send(result.body);
-      };
-
-      v1.post('/accounts', async (request, reply) => {
-        const body = schemas.createAccountBody.parse(request.body);
-        const account = await createAccount(pool, body);
-        return reply.status(201).send(serializeAccount(account));
-      });
-
-      v1.get('/accounts/:code', async (request) => {
-        const { code } = schemas.accountParams.parse(request.params);
-        return serializeAccount(await getAccount(pool, code));
-      });
-
-      v1.get('/accounts/:code/entries', async (request) => {
-        const { code } = schemas.accountParams.parse(request.params);
-        const query = schemas.entriesQuery.parse(request.query);
-        const page = await listAccountEntries(pool, code, query);
-        return {
-          entries: page.entries.map(serializeAccountEntry),
-          nextCursor: page.nextCursor?.toString() ?? null,
-        };
-      });
-
-      v1.post('/transactions', async (request, reply) => {
-        const key = readIdempotencyKey(request);
-        const body = schemas.postTransactionBody.parse(request.body);
-        const result = await runIdempotent(
-          pool,
-          key,
-          fingerprint({ route: 'POST /v1/transactions', body: request.body }),
-          async (client) => {
-            const transaction = await postTransaction(client, body);
-            return { status: 201, body: serializeTransaction(transaction) };
-          },
-        );
-        if (!result.replayed) metrics.transactionsPosted.inc({ kind: 'posting' });
-        return sendIdempotent(reply, result);
-      });
-
-      v1.get('/transactions/:id', async (request) => {
-        const { id } = schemas.transactionParams.parse(request.params);
-        return serializeTransaction(await getTransaction(pool, id));
-      });
-
-      v1.post('/transactions/:id/reversals', async (request, reply) => {
-        const key = readIdempotencyKey(request);
-        const { id } = schemas.transactionParams.parse(request.params);
-        const body = schemas.reverseTransactionBody.parse(request.body ?? {});
-        const result = await runIdempotent(
-          pool,
-          key,
-          fingerprint({ route: `POST /v1/transactions/${id}/reversals`, body: request.body ?? {} }),
-          async (client) => {
-            const reversal = await reverseTransaction(client, id, body);
-            return { status: 201, body: serializeTransaction(reversal) };
-          },
-        );
-        if (!result.replayed) metrics.transactionsPosted.inc({ kind: 'reversal' });
-        return sendIdempotent(reply, result);
-      });
-
-      v1.post('/reconciliations', async (request) => {
-        const body = schemas.reconcileBody.parse(request.body);
-        return serializeReport(await reconcileAccount(pool, body));
-      });
-
+      accountRoutes(v1, context);
+      transactionRoutes(v1, context);
+      holdRoutes(v1, context);
+      reportRoutes(v1, context);
       done();
     },
     { prefix: '/v1' },

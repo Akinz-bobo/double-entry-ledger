@@ -55,3 +55,35 @@ export const entriesQuery = z.strictObject({
 });
 
 export const idempotencyKey = z.string().min(8).max(255);
+
+export const listAccountsQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  after: accountCode.optional(),
+  type: z.enum(ACCOUNT_TYPES).optional(),
+  currency: currencySchema.optional(),
+});
+
+export const createHoldBody = z.strictObject({
+  accountCode,
+  amount: amountSchema,
+  reference,
+  expiresAt: z.iso
+    .datetime({ offset: true })
+    .transform((value) => new Date(value))
+    .refine((value) => value > new Date(), 'must be in the future')
+    .optional(),
+});
+
+export const captureHoldBody = z.strictObject({
+  destinationAccountCode: accountCode,
+  amount: amountSchema.optional(),
+  reference: reference.optional(),
+  description: z.string().max(500).optional(),
+});
+
+export const holdParams = z.strictObject({ id: z.uuid() });
+
+export const eventsQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  cursor: z.string().min(1).max(200).optional(),
+});
