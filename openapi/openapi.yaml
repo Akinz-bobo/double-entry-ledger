@@ -1,0 +1,852 @@
+openapi: 3.0.3
+info:
+  title: Double-Entry Ledger API
+  version: 0.2.0
+  description: |
+    A ledger for products that move money.
+
+    **Amounts** are whole numbers of a currency's minor unit (cents, kobo), sent and
+    returned as strings: `"5000"` is 50.00 in a two-decimal currency.
+
+    **Idempotency.** Every request that changes the ledger needs an `Idempotency-Key`
+    header. Sending the same key with the same request again returns the first
+    response, marked with `Idempotent-Replayed: true`, and changes nothing.
+
+    **Errors** share one shape: `{ "error": { "code", "message", "details" } }`.
+    Match on `code`; messages are for people.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:3000
+    description: Local stack (`make up`)
+tags:
+  - name: Accounts
+  - name: Transactions
+  - name: Holds
+    description: Reserve funds now, capture or release them later.
+  - name: Reports
+  - name: Events
+  - name: Operations
+    description: Health checks and metrics. These need no API key.
+security:
+  - apiKey: []
+
+paths:
+  /v1/accounts:
+    post:
+      tags: [Accounts]
+      summary: Create an account
+      operationId: createAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAccount' }
+            example: { code: 'wallet:alice', name: 'Alice', type: liability, currency: USD }
+      responses:
+        '201':
+          description: The account was created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: An account with this code already exists (`account_exists`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Accounts]
+      summary: List accounts
+      description: Returns accounts in code order. Pass `nextCursor` as `after` to get the next page.
+      operationId: listAccounts
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
+          }
+        - {
+            name: after,
+            in: query,
+            schema: { type: string },
+            description: Return accounts after this code.,
+          }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/AccountType' } }
+        - { name: currency, in: query, schema: { $ref: '#/components/schemas/Currency' } }
+      responses:
+        '200':
+          description: A page of accounts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts, nextCursor]
+                properties:
+                  accounts:
+                    type: array
+                    items: { $ref: '#/components/schemas/Account' }
+                  nextCursor: { type: string, nullable: true }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/accounts/{code}:
+    get:
+      tags: [Accounts]
+      summary: Get an account and its balances
+      operationId: getAccount
+      parameters:
+        - $ref: '#/components/parameters/AccountCode'
+      responses:
+        '200':
+          description: The account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/accounts/{code}/entries:
+    get:
+      tags: [Accounts]
+      summary: List an account's entries
+      description: Newest first. Pass `nextCursor` as `before` to get the next page.
+      operationId: listAccountEntries
+      parameters:
+        - $ref: '#/components/parameters/AccountCode'
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 200, default: 50 },
+          }
+        - {
+            name: before,
+            in: query,
+            schema: { type: string },
+            description: Return entries older than this entry id.,
+          }
+      responses:
+        '200':
+          description: A page of entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, nextCursor]
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccountEntry' }
+                  nextCursor: { type: string, nullable: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/transactions:
+    post:
+      tags: [Transactions]
+      summary: Post a transaction
+      description: |
+        Records a balanced set of entries. Debits must equal credits for each
+        currency, and no account may end below zero unless it allows it.
+      operationId: postTransaction
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PostTransaction' }
+            example:
+              reference: deposit-1
+              description: Card deposit
+              entries:
+                - { accountCode: 'bank:cash', direction: debit, amount: '5000' }
+                - { accountCode: 'wallet:alice', direction: credit, amount: '5000' }
+      responses:
+        '201':
+          description: The transaction was posted.
+          headers:
+            Idempotent-Replayed: { $ref: '#/components/headers/IdempotentReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: A transaction with this reference already exists (`duplicate_reference`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/transactions/{id}:
+    get:
+      tags: [Transactions]
+      summary: Get a transaction and its entries
+      operationId: getTransaction
+      parameters:
+        - $ref: '#/components/parameters/TransactionId'
+      responses:
+        '200':
+          description: The transaction.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/transactions/{id}/reversals:
+    post:
+      tags: [Transactions]
+      summary: Reverse a transaction
+      description: |
+        Posts the mirror image of a transaction. The original is never changed.
+        A transaction can be reversed once, and a reversal cannot itself be reversed.
+      operationId: reverseTransaction
+      parameters:
+        - $ref: '#/components/parameters/TransactionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReverseTransaction' }
+            example: { description: Customer refund }
+      responses:
+        '201':
+          description: The reversal was posted.
+          headers:
+            Idempotent-Replayed: { $ref: '#/components/headers/IdempotentReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The transaction has already been reversed (`already_reversed`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/holds:
+    post:
+      tags: [Holds]
+      summary: Place a hold
+      description: |
+        Reserves funds on an account without moving them. Held funds no longer
+        count towards the account's `availableBalance`.
+      operationId: createHold
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateHold' }
+            example: { accountCode: 'wallet:alice', amount: '1500', reference: auth-1 }
+      responses:
+        '201':
+          description: The hold was placed.
+          headers:
+            Idempotent-Replayed: { $ref: '#/components/headers/IdempotentReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Hold' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: A hold with this reference already exists (`duplicate_reference`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/holds/{id}:
+    get:
+      tags: [Holds]
+      summary: Get a hold
+      operationId: getHold
+      parameters:
+        - $ref: '#/components/parameters/HoldId'
+      responses:
+        '200':
+          description: The hold.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Hold' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/holds/{id}/capture:
+    post:
+      tags: [Holds]
+      summary: Capture a hold
+      description: |
+        Moves the held funds to `destinationAccountCode`. Capturing less than the
+        held amount releases the remainder back to the account.
+      operationId: captureHold
+      parameters:
+        - $ref: '#/components/parameters/HoldId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CaptureHold' }
+            example: { destinationAccountCode: 'merchant:shop', amount: '1200' }
+      responses:
+        '200':
+          description: The hold was captured.
+          headers:
+            Idempotent-Replayed: { $ref: '#/components/headers/IdempotentReplayed' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hold, transaction]
+                properties:
+                  hold: { $ref: '#/components/schemas/Hold' }
+                  transaction: { $ref: '#/components/schemas/Transaction' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/HoldNotOpen' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/holds/{id}/void:
+    post:
+      tags: [Holds]
+      summary: Void a hold
+      description: Cancels a hold and returns its funds to the available balance.
+      operationId: voidHold
+      parameters:
+        - $ref: '#/components/parameters/HoldId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The hold was voided.
+          headers:
+            Idempotent-Replayed: { $ref: '#/components/headers/IdempotentReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Hold' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/HoldNotOpen' }
+
+  /v1/reconciliations:
+    post:
+      tags: [Reports]
+      summary: Reconcile an account against an external statement
+      description: |
+        Compares the ledger's entries for one account and period with the lines of
+        a bank or payment-provider statement, matching on reference. Changes nothing,
+        so a read-only key may call it.
+      operationId: reconcile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reconcile' }
+            example:
+              accountCode: 'bank:cash'
+              from: '2026-11-01T00:00:00Z'
+              to: '2026-12-01T00:00:00Z'
+              statement:
+                - { reference: deposit-1, direction: debit, amount: '5000' }
+      responses:
+        '200':
+          description: The differences between the ledger and the statement.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReconciliationReport' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/reports/trial-balance:
+    get:
+      tags: [Reports]
+      summary: Get the trial balance
+      description: |
+        Total debits and credits across all accounts, per currency. They are always
+        equal in a healthy ledger, which makes this a cheap integrity check.
+      operationId: trialBalance
+      responses:
+        '200':
+          description: The trial balance.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrialBalance' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/events:
+    get:
+      tags: [Events]
+      summary: Read the event feed
+      description: |
+        An ordered feed of everything that happened in the ledger. Each event is
+        written in the same database transaction as the change it describes.
+
+        To consume the feed, call it repeatedly, passing the last `nextCursor` you
+        received. An empty page means you are caught up; keep the cursor and poll again.
+        Events are delivered in a stable order and never skipped.
+      operationId: listEvents
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 500, default: 100 },
+          }
+        - {
+            name: cursor,
+            in: query,
+            schema: { type: string },
+            description: The `nextCursor` from the previous page.,
+          }
+      responses:
+        '200':
+          description: A page of events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, nextCursor]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+                  nextCursor: { type: string, nullable: true }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /healthz:
+    get:
+      tags: [Operations]
+      summary: Liveness check
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          description: The process is running.
+          content:
+            application/json:
+              schema: { type: object, properties: { status: { type: string, example: ok } } }
+
+  /readyz:
+    get:
+      tags: [Operations]
+      summary: Readiness check
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          description: The service can reach its database.
+          content:
+            application/json:
+              schema: { type: object, properties: { status: { type: string, example: ready } } }
+        '503':
+          description: The database is unreachable.
+
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics
+      operationId: metrics
+      security: []
+      responses:
+        '200':
+          description: Metrics in the Prometheus text format.
+          content:
+            text/plain:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Read-only keys may call `GET` routes and `POST /v1/reconciliations`.
+
+  parameters:
+    AccountCode:
+      name: code
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/AccountCodeValue' }
+    TransactionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    HoldId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: A unique value for this operation. Reuse it only to retry the same request.
+      schema: { type: string, minLength: 8, maxLength: 255 }
+      example: 8f14e45f-ceea-4c1b-a3b1-0e7f5d2b9c11
+
+  headers:
+    IdempotentReplayed:
+      description: Present and `true` when the response is a replay of an earlier request.
+      schema: { type: string, enum: ['true'] }
+
+  responses:
+    ValidationError:
+      description: The request is malformed (`validation_error`, `idempotency_key_required`, `invalid_cursor`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: The API key is missing or wrong (`unauthorized`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: The API key lacks the scope this route needs (`forbidden`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: The account, transaction or hold does not exist.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: |
+        The request is well formed but breaks a ledger rule: `unbalanced_transaction`,
+        `insufficient_funds`, `capture_exceeds_hold`, `cannot_reverse_reversal`,
+        or `idempotency_key_reused`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    HoldNotOpen:
+      description: The hold was already captured, voided or expired (`hold_not_pending`, `hold_expired`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Amount:
+      type: string
+      pattern: '^[1-9]\d*$'
+      description: A positive whole number of minor units.
+      example: '5000'
+    SignedAmount:
+      type: string
+      pattern: '^-?\d+$'
+      description: A whole number of minor units. May be zero or negative.
+      example: '-250'
+    Currency:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: ISO 4217 currency code.
+      example: USD
+    AccountCodeValue:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9:._-]*$'
+      maxLength: 64
+      example: 'wallet:alice'
+    AccountType:
+      type: string
+      enum: [asset, liability, equity, revenue, expense]
+    Direction:
+      type: string
+      enum: [debit, credit]
+
+    CreateAccount:
+      type: object
+      additionalProperties: false
+      required: [code, name, type, currency]
+      properties:
+        code: { $ref: '#/components/schemas/AccountCodeValue' }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        type: { $ref: '#/components/schemas/AccountType' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        allowNegative:
+          type: boolean
+          default: false
+          description: Let this account's balance go below zero.
+    Account:
+      type: object
+      required:
+        [
+          id,
+          code,
+          name,
+          type,
+          currency,
+          allowNegative,
+          balance,
+          availableBalance,
+          held,
+          debitsPosted,
+          creditsPosted,
+          createdAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        code: { $ref: '#/components/schemas/AccountCodeValue' }
+        name: { type: string }
+        type: { $ref: '#/components/schemas/AccountType' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        allowNegative: { type: boolean }
+        balance:
+          allOf: [{ $ref: '#/components/schemas/SignedAmount' }]
+          description: Positive when the balance is on the account's normal side.
+        availableBalance:
+          allOf: [{ $ref: '#/components/schemas/SignedAmount' }]
+          description: The balance less funds on hold.
+        held: { $ref: '#/components/schemas/SignedAmount' }
+        debitsPosted: { $ref: '#/components/schemas/SignedAmount' }
+        creditsPosted: { $ref: '#/components/schemas/SignedAmount' }
+        createdAt: { type: string, format: date-time }
+    AccountEntry:
+      type: object
+      required: [id, transactionId, reference, direction, amount, postedAt]
+      properties:
+        id: { type: string }
+        transactionId: { type: string, format: uuid }
+        reference: { type: string }
+        direction: { $ref: '#/components/schemas/Direction' }
+        amount: { $ref: '#/components/schemas/Amount' }
+        postedAt: { type: string, format: date-time }
+
+    EntryInput:
+      type: object
+      additionalProperties: false
+      required: [accountCode, direction, amount]
+      properties:
+        accountCode: { $ref: '#/components/schemas/AccountCodeValue' }
+        direction: { $ref: '#/components/schemas/Direction' }
+        amount: { $ref: '#/components/schemas/Amount' }
+    PostTransaction:
+      type: object
+      additionalProperties: false
+      required: [reference, entries]
+      properties:
+        reference:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Your own identifier for this movement. Must be unique.
+        description: { type: string, maxLength: 500 }
+        metadata: { type: object, additionalProperties: true }
+        entries:
+          type: array
+          minItems: 2
+          maxItems: 100
+          items: { $ref: '#/components/schemas/EntryInput' }
+    ReverseTransaction:
+      type: object
+      additionalProperties: false
+      properties:
+        reference:
+          type: string
+          maxLength: 128
+          description: Defaults to `reversal:<original reference>`.
+        description: { type: string, maxLength: 500 }
+    Transaction:
+      type: object
+      required: [id, reference, description, metadata, reverses, postedAt, entries]
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string }
+        description: { type: string, nullable: true }
+        metadata: { type: object, additionalProperties: true }
+        reverses:
+          type: string
+          format: uuid
+          nullable: true
+          description: The transaction this one reverses, if it is a reversal.
+        postedAt: { type: string, format: date-time }
+        entries:
+          type: array
+          items:
+            type: object
+            required: [id, accountCode, direction, amount, currency]
+            properties:
+              id: { type: string }
+              accountCode: { $ref: '#/components/schemas/AccountCodeValue' }
+              direction: { $ref: '#/components/schemas/Direction' }
+              amount: { $ref: '#/components/schemas/Amount' }
+              currency: { $ref: '#/components/schemas/Currency' }
+
+    CreateHold:
+      type: object
+      additionalProperties: false
+      required: [accountCode, amount, reference]
+      properties:
+        accountCode: { $ref: '#/components/schemas/AccountCodeValue' }
+        amount: { $ref: '#/components/schemas/Amount' }
+        reference: { type: string, minLength: 1, maxLength: 128 }
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the hold lapses if not captured. Omit for a hold that never expires.
+    CaptureHold:
+      type: object
+      additionalProperties: false
+      required: [destinationAccountCode]
+      properties:
+        destinationAccountCode: { $ref: '#/components/schemas/AccountCodeValue' }
+        amount:
+          allOf: [{ $ref: '#/components/schemas/Amount' }]
+          description: Defaults to the full held amount.
+        reference:
+          type: string
+          maxLength: 128
+          description: Defaults to `capture:<hold reference>`.
+        description: { type: string, maxLength: 500 }
+    Hold:
+      type: object
+      required:
+        [
+          id,
+          reference,
+          accountCode,
+          amount,
+          status,
+          expiresAt,
+          capturedAmount,
+          transactionId,
+          createdAt,
+          resolvedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string }
+        accountCode: { $ref: '#/components/schemas/AccountCodeValue' }
+        amount: { $ref: '#/components/schemas/Amount' }
+        status: { type: string, enum: [pending, captured, voided, expired] }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        capturedAmount:
+          type: string
+          nullable: true
+          example: '1200'
+        transactionId: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+
+    StatementLine:
+      type: object
+      additionalProperties: false
+      required: [reference, direction, amount]
+      properties:
+        reference: { type: string }
+        direction: { $ref: '#/components/schemas/Direction' }
+        amount: { $ref: '#/components/schemas/Amount' }
+    Reconcile:
+      type: object
+      additionalProperties: false
+      required: [accountCode, from, to, statement]
+      properties:
+        accountCode: { $ref: '#/components/schemas/AccountCodeValue' }
+        from: { type: string, format: date-time, description: Start of the period, inclusive. }
+        to: { type: string, format: date-time, description: End of the period, exclusive. }
+        statement:
+          type: array
+          maxItems: 10000
+          items: { $ref: '#/components/schemas/StatementLine' }
+    ReconciliationReport:
+      type: object
+      required:
+        [
+          balanced,
+          matched,
+          amountMismatches,
+          missingInLedger,
+          missingInStatement,
+          duplicateStatementReferences,
+        ]
+      properties:
+        balanced: { type: boolean, description: True when there are no differences at all. }
+        matched: { type: integer }
+        amountMismatches:
+          type: array
+          items:
+            type: object
+            properties:
+              reference: { type: string }
+              ledgerAmount: { $ref: '#/components/schemas/SignedAmount' }
+              statementAmount: { $ref: '#/components/schemas/SignedAmount' }
+        missingInLedger:
+          type: array
+          description: On the statement but never posted to the ledger.
+          items: { $ref: '#/components/schemas/ReferenceAmount' }
+        missingInStatement:
+          type: array
+          description: Posted to the ledger but absent from the statement.
+          items: { $ref: '#/components/schemas/ReferenceAmount' }
+        duplicateStatementReferences:
+          type: array
+          items: { type: string }
+    ReferenceAmount:
+      type: object
+      properties:
+        reference: { type: string }
+        amount: { $ref: '#/components/schemas/SignedAmount' }
+
+    TrialBalance:
+      type: object
+      required: [balanced, currencies]
+      properties:
+        balanced: { type: boolean }
+        currencies:
+          type: array
+          items:
+            type: object
+            properties:
+              currency: { $ref: '#/components/schemas/Currency' }
+              debits: { $ref: '#/components/schemas/SignedAmount' }
+              credits: { $ref: '#/components/schemas/SignedAmount' }
+              balanced: { type: boolean }
+
+    Event:
+      type: object
+      required: [id, type, payload, createdAt]
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum:
+            - account.created
+            - transaction.posted
+            - transaction.reversed
+            - hold.created
+            - hold.captured
+            - hold.voided
+            - hold.expired
+        payload:
+          type: object
+          additionalProperties: true
+          description: Identifiers of what changed. Fetch the resource for its details.
+        createdAt: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: insufficient_funds }
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
