@@ -7,6 +7,7 @@ Please email adeyemoakinola2@gmail.com with the details and steps to reproduce. 
 ## What the service does
 
 - **Authentication.** Every `/v1` route requires an API key. Only SHA-256 digests of keys are configured, and digests are compared in constant time.
+- **Least privilege.** A key can be read-only. Routes declare the scope they need, and a route that declares nothing requires write access.
 - **Input validation.** Every body, path and query is validated against a strict schema. Unknown fields are rejected.
 - **SQL injection.** All queries are parameterised. No SQL is built from request data.
 - **Logging.** API keys and authorization headers are redacted from logs. Unhandled errors are logged in full and returned to the client as a generic message.
